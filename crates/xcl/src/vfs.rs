@@ -267,9 +267,10 @@ impl Vfs {
             return Target::Pass;
         }
         let p = strip_verbatim(&p);
-        if p.starts_with("\\\\") {
+/*        if p.starts_with("\\\\") {
             return Target::Pass; // UNC
         }
+*/
         let (p, translated) = match self.apply_mounts(&p) {
             Some(t) if !self.in_own_folders(&p, &full) => (t, true),
             _ => (p, false),

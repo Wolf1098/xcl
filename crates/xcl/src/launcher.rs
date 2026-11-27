@@ -227,7 +227,9 @@ fn config_root(exe: &Path) -> Option<PathBuf> {
     let mut dir = exe.parent()?;
     for _ in 0..5 {
         let (exes, _) = read_game_config(dir);
-        if exes.iter().any(|e| std::fs::canonicalize(dir.join(e)).ok().is_some_and(|p| PathBuf::from(p.to_string_lossy().trim_start_matches("\\\\?\\")) == exe)) {
+        if exes.iter().any(|e| {
+            std::path::absolute(dir.join(e)).ok().is_some_and(|p| p.to_string_lossy().eq_ignore_ascii_case(&exe.to_string_lossy()))
+        }) {
             return Some(dir.to_path_buf());
         }
         dir = dir.parent()?;
@@ -236,8 +238,9 @@ fn config_root(exe: &Path) -> Option<PathBuf> {
 }
 
 fn resolve_location(target: &Path) -> Result<(PathBuf, Option<PathBuf>, String), String> {
-    let target = std::fs::canonicalize(target).map_err(|e| format!("{}: {e}", target.display()))?;
-    let target = PathBuf::from(target.to_string_lossy().trim_start_matches("\\\\?\\"));
+    let target = std::path::absolute(target).map_err(|e| format!("{}: {e}", target.display()))?;
+    if !target.exists() { return Err(format!("{} does not exist", target.display())); }
+//    let target = PathBuf::from(target.to_string_lossy().trim_start_matches("\\\\?\\"));
     let (root, exe) = if target.is_dir() {
         (target, None)
     } else {
