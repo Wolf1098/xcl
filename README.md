@@ -262,18 +262,31 @@ xcl rpf D:\data\shaders.rpf --extract NAME --out folder
 <details>
 <summary><b>Switches, caches, logs and the files XCL writes</b></summary>
 
-- When a game folder contains a `shaders.rpf` shader pack or loose `.dxbc` files under
-  `shaders/`, XCL shows shader preparation in the game window before executing title code.
-  The same window then presents the game. The percentage counts
-  processed records. The timer counts seconds since one finished (or preparation started);
-  five seconds without progress counts as a stall, and the window shows when the last one ended.
-  XCL prepares supported shader stages and compute pipelines, including
-  split pieces and their whole fallback. Graphics pipelines that need state supplied by the
-  title are created during play. Later launches reuse matching cache entries.
-  Closing the window cancels the launch. A compiler or driver failure stops it and reports
-  the cause. Null-renderer runs skip shader preparation. With presentation disabled, the gate runs without a window.
-  `XCL_PREPARE=0` leaves the preparation out: the game starts at once and builds the shaders it
-  uses as it goes (it stands still while they build).
+- XCL uses the game window to show preparation progress before executing title code. It prepares
+  supported shader packs, supported loose shaders under `shaders/`, recorded graphics history and
+  staged pipeline recipes. Closing the window cancels launch. A failed staged recipe stops launch.
+  With presentation disabled, preparation runs without a window. A staged corpus still gates
+  launch when the null renderer is selected. For an unstaged title set `XCL_PREPARE=0`
+  to skip startup preparation, or `XCL_PREPARE_GRAPHICS=0` to skip optional graphics history.
+  Native recipes validated on this adapter and driver reuse their verified blobs across
+  rebuilds. Changes to translation, pipeline layout, settings or cache files trigger validation.
+- To prepare known graphics, two-pass mesh and compute recipes offline, use a local
+  [archive layout profile](scripts/pso_corpus/archive-profile.md) with the following commands.
+  The staging command accepts several journals, deduplicates their recipes and atomically publishes
+  a content identity for later preparation receipts.
+
+  ```powershell
+  python scripts/pso_corpus/pso_archive.py profile.json archive.bin pipelines.bin
+  python scripts/pso_corpus/stage.py --title <title-folder> pipelines.bin
+  xcl shaders <title-folder> --prepare-corpus --threads 8
+  ```
+
+  The offline command accepts up to 32 workers. Normal launch also prepares the staged corpus.
+  When a shader pack or local history overlaps the corpus, XCL prepares each exact match once.
+  Use the same adapter and memory-window
+  configuration for offline preparation and play so the driver can reuse the results.
+  Graphics state combinations absent from the supplied recipes and local history can still
+  require a first-use compile during play.
 - For compute shaders that XCL can split, the runtime first tries the saved driver blob for
   the whole shader. A usable blob lets the GPU run it in one dispatch. If the blob is missing
   or the driver rejects it, XCL builds the split pieces.

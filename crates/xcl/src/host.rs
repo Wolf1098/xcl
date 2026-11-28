@@ -8,6 +8,50 @@ use crate::config::Boot;
 
 pub static HOST_MODE: AtomicBool = AtomicBool::new(false);
 
+/// The system's commit charge and its limit in bytes (RAM plus page files): what all programs'
+/// memory, and all video memory, is counted against. (0, 0): not known.
+pub fn system_commit() -> (u64, u64) {
+    use windows_sys::Win32::System::ProcessStatus::{K32GetPerformanceInfo, PERFORMANCE_INFORMATION};
+    unsafe {
+        let mut p: PERFORMANCE_INFORMATION = std::mem::zeroed();
+        p.cb = std::mem::size_of_val(&p) as u32;
+        if K32GetPerformanceInfo(&mut p, p.cb) == 0 {
+            return (0, 0);
+        }
+        (p.CommitTotal as u64 * p.PageSize as u64, p.CommitLimit as u64 * p.PageSize as u64)
+    }
+}
+
+/// Whether commit left over (`limit - commit`) is logged as low: under `LOW_COMMIT` the first
+/// time, then each time it is half of what was logged last.
+fn low_commit_logged(left: u64, last: u64) -> bool {
+    left < LOW_COMMIT && (last == 0 || left <= last / 2)
+}
+
+/// Commit left under which the log warns: a retail title's world took the last 6 GB in seconds.
+const LOW_COMMIT: u64 = 8 << 30;
+
+/// The system is running out of commit: said in the log (once, then at each halving). When it
+/// runs out, allocations fail for every program. (Measured on a retail title's world, whose
+/// process held 45 GB beside 71 GB of other programs under a 147 GB limit: the process's own
+/// memory counts against the commit, its 24 GB of video memory do not.)
+fn warn_low_commit(commit: u64, limit: u64, private: u64, video: u64) {
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let left = limit.saturating_sub(commit);
+    let last = LAST.load(Ordering::Relaxed);
+    if !low_commit_logged(left, last) {
+        return;
+    }
+    LAST.store(left.max(1), Ordering::Relaxed);
+    crate::xlog_warn!(
+        "memory: the system is running out of commit: {} MB left of {} MB (RAM + page file). This process holds {} MB (and {} MB of video memory, which do not count), other programs the rest. When it runs out allocations fail for every program: close other programs or give Windows a larger page file",
+        left >> 20,
+        limit >> 20,
+        private >> 20,
+        video >> 20
+    );
+}
+
 pub fn host_main(boot_path: &Path) -> i32 {
     let boot: Boot = match std::fs::read_to_string(boot_path).map_err(|e| e.to_string()).and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string())) {
         Ok(b) => b,
@@ -77,8 +121,16 @@ pub fn host_main(boot_path: &Path) -> i32 {
                 let (pools, pools_mapped) = crate::hle::d3d12x::sparse::pool_bytes();
                 let (pages, page_pools) = crate::hle::d3d12x::vram::page_bytes();
                 let mb = |b: u64| b >> 20;
+                // the system's commit: this process's memory counts against it with every other
+                // program's (video memory does not), and where it ends allocations fail
+                let (commit, commit_limit) = system_commit();
+                let mut commit_text = String::new();
+                if commit_limit != 0 {
+                    commit_text = format!("; system commit {} of {} MB", mb(commit), mb(commit_limit));
+                    warn_low_commit(commit, commit_limit, private as u64, local);
+                }
                 crate::xlog_info!(
-                    "memory: {} MB committed by the process; video memory {} MB local, {} MB non-local; target pages {} MB (pools {} MB); arenas {} MB in use, {} MB made; sparse pools {} MB ({} MB mapped)",
+                    "memory: {} MB committed by the process; video memory {} MB local, {} MB non-local; target pages {} MB (pools {} MB); arenas {} MB in use, {} MB made; sparse pools {} MB ({} MB mapped){commit_text}",
                     mb(private as u64),
                     mb(local),
                     mb(non_local),
@@ -163,4 +215,25 @@ pub fn host_main(boot_path: &Path) -> i32 {
     crate::report::write_final(None);
     crate::log::flush();
     code as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn low_commit_is_logged_under_the_mark_and_at_each_halving() {
+        assert!(!low_commit_logged(LOW_COMMIT, 0), "at the mark: not yet");
+        assert!(low_commit_logged(LOW_COMMIT - 1, 0));
+        assert!(!low_commit_logged(5 << 30, 7 << 30), "less, but not half of what was logged last");
+        assert!(low_commit_logged(3 << 30, 7 << 30));
+        assert!(low_commit_logged(0, 1), "none left");
+        assert!(!low_commit_logged(9 << 30, 1 << 30), "back above the mark");
+    }
+
+    #[test]
+    fn the_system_commit_is_known_and_under_its_limit() {
+        let (commit, limit) = system_commit();
+        assert!(commit > 0 && commit <= limit, "{commit} of {limit}");
+    }
 }
