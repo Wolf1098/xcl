@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 // `pso.rs` also contains cache storage and pipeline setup. Keep it out of the source hash so
 // those changes do not discard translations; bump this only when its container parsing,
 // translation options, profiles, or post-translation HLSL changes.
-const TRANSLATION_GLUE_REVISION: &str = "pso-glue-v2";
+const TRANSLATION_GLUE_REVISION: &str = "pso-glue-v4";
 
 const TRANSLATOR_SOURCES: &[&str] = &[
     "src/gpu/dxbc.rs",
@@ -90,6 +91,18 @@ fn preparation_source_id(mut id: u64) -> u64 {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=RUSTC");
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let rustc_version = Command::new(rustc).arg("--version").output().ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|version| !version.is_empty())
+        .unwrap_or_else(|| "unknown".to_owned());
+    println!("cargo:rustc-env=XCL_BUILD_RUSTC={rustc_version}");
+    println!("cargo:rustc-env=XCL_BUILD_PROFILE={}", std::env::var("PROFILE").unwrap_or_else(|_| "unknown".into()));
+    println!("cargo:rustc-env=XCL_BUILD_OPT_LEVEL={}", std::env::var("OPT_LEVEL").unwrap_or_else(|_| "unknown".into()));
+    println!("cargo:rustc-env=XCL_BUILD_DEBUG_ASSERTIONS={}", std::env::var("DEBUG").unwrap_or_else(|_| "unknown".into()));
+
     // xcl.exe without high-entropy ASLR: the title's memory then lies under 2^40, which a
     // retail title's BVH builder requires of its GPU addresses (#585, PR #631)
     match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
